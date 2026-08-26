@@ -1,0 +1,8 @@
+{
+  "minimum_training_games": 300,
+  "recommended_training_seasons": 3,
+  "minimum_betting_edge": 0.025,
+  "combination_simulations": 50000,
+  "bvp_prior_plate_appearances": 40,
+  "walk_forward_refit_games": 50
+}

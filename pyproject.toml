@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlb-decision-model"
+version = "0.1.0"
+description = "Calibrated MLB matchup and betting decision model"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Junho7-Kweon" }]
+dependencies = []
+
+[project.optional-dependencies]
+# 완전히 선택 사항. 없으면 캡처 이미지에서 배당을 자동 추출하는 기능만 비활성화되고
+# (수동 입력으로 대체됨), 나머지 핵심 기능은 그대로 외부 의존성 없이 동작한다.
+ocr = ["pytesseract>=0.3", "pillow>=10.0"]
+
+[project.scripts]
+mlb-train = "mlb_decision_model.train:main"
+mlb-backtest = "mlb_decision_model.backtest:main"
+mlb-predict = "mlb_decision_model.predict:main"
+mlb-retrosheet = "mlb_decision_model.retrosheet:main"
+mlb-retrosheet-etl = "mlb_decision_model.retrosheet_etl:main"
+mlb-dashboard = "mlb_decision_model.dashboard:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mlb_decision_model = ["static/*.html"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
