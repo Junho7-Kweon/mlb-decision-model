@@ -1,0 +1,38 @@
+{
+  "home": {
+    "starter": {"hand": "R", "era": 3.25, "fip": 3.42, "xera": 3.51, "k_rate": 0.27, "bb_rate": 0.07, "gb_rate": 0.46, "rest_days": 5, "velocity_delta": 0.2},
+    "bullpen": [
+      {"era": 2.90, "fip": 3.10, "k_rate": 0.29, "bb_rate": 0.07, "pitches_1d": 0, "pitches_3d": 18, "leverage_weight": 1.2},
+      {"era": 3.60, "fip": 3.55, "k_rate": 0.24, "bb_rate": 0.08, "pitches_1d": 22, "pitches_3d": 38, "leverage_weight": 1.0}
+    ],
+    "closer": {"era": 2.45, "fip": 2.70, "k_rate": 0.33, "bb_rate": 0.06, "pitches_1d": 0, "pitches_3d": 14},
+    "lineup": [
+      {"name": "H1", "woba_vs_r": 0.365, "woba_vs_l": 0.340, "bvp": {"ab": 18, "h": 6, "bb": 2}},
+      {"name": "H2", "woba_vs_r": 0.352, "woba_vs_l": 0.371, "bvp": {"ab": 3, "h": 2, "bb": 0}},
+      {"name": "H3", "woba_vs_r": 0.340, "woba_vs_l": 0.330, "bvp": {"ab": 25, "h": 7, "bb": 3}}
+    ],
+    "defense_runs_per_game": 0.15,
+    "rest_days": 1
+  },
+  "away": {
+    "starter": {"hand": "L", "era": 4.10, "fip": 3.95, "xera": 4.05, "k_rate": 0.23, "bb_rate": 0.09, "gb_rate": 0.40, "rest_days": 4, "velocity_delta": -0.3},
+    "bullpen": [
+      {"era": 3.80, "fip": 3.90, "k_rate": 0.23, "bb_rate": 0.09, "pitches_1d": 28, "pitches_3d": 52, "pitched_back_to_back": true, "leverage_weight": 1.2},
+      {"era": 4.20, "fip": 4.05, "k_rate": 0.22, "bb_rate": 0.10, "pitches_1d": 0, "pitches_3d": 30, "leverage_weight": 1.0}
+    ],
+    "closer": {"era": 3.30, "fip": 3.45, "k_rate": 0.28, "bb_rate": 0.08, "pitches_1d": 24, "pitches_3d": 47, "pitched_back_to_back": true},
+    "lineup": [
+      {"name": "A1", "woba_vs_r": 0.330, "woba_vs_l": 0.345, "bvp": {"ab": 12, "h": 3, "bb": 1}},
+      {"name": "A2", "woba_vs_r": 0.318, "woba_vs_l": 0.325, "bvp": {"ab": 4, "h": 2, "bb": 0}},
+      {"name": "A3", "woba_vs_r": 0.335, "woba_vs_l": 0.310, "bvp": {"ab": 21, "h": 5, "bb": 2}}
+    ],
+    "defense_runs_per_game": -0.08,
+    "rest_days": 0
+  },
+  "team_matchup": {
+    "shrunk_edge": 0.03
+  },
+  "weather": {
+    "edge": 0.0
+  }
+}

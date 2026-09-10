@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>대시보드 v2 목업 - 참고용</title>
+<style>
+  body { font-family: -apple-system, "Malgun Gothic", sans-serif; max-width: 760px; margin: 40px auto; color: #22262f; }
+  h2 { font-size: 14px; color: #5b6472; font-weight: 500; margin: 28px 0 10px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .card { background: #fff; border: 1px solid #e2e6ee; border-radius: 12px; padding: 10px; }
+  .thumb { height: 70px; background: #f2f5fa; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #999; margin-bottom: 8px; }
+  .pick { display: inline-block; font-size: 10px; padding: 2px 6px; border-radius: 6px; margin: 2px 4px 0 0; }
+  .pick.accent { background: #e6f1fb; color: #185fa5; }
+  .pick.muted { background: #f2f5fa; color: #5b6472; }
+  .add-card { border: 1.5px dashed #b9c0cd; border-radius: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 118px; color: #999; cursor: pointer; }
+  .loading { background: #f2f5fa; border-radius: 12px; padding: 40px 16px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+  .ball { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 11px; }
+  .bar-label { width: 130px; color: #5b6472; }
+  .bar-track { flex: 1; background: #f2f5fa; border-radius: 4px; height: 16px; }
+  .bar-fill { background: #378add; height: 100%; border-radius: 4px; }
+  .bar-value { width: 40px; }
+</style>
+</head>
+<body>
+
+<h2>1. 캡처 카드 여러 장 (+ 추가 가능, 상한 없음 - 6장 이상이면 경고)</h2>
+<div class="grid">
+  <div class="card">
+    <div class="thumb">이미지</div>
+    <div><b style="font-size:11px">경기 1</b></div>
+    <div><span class="pick accent">승 1.90</span><span class="pick muted">언더 1.61</span></div>
+  </div>
+  <div class="card">
+    <div class="thumb">이미지</div>
+    <div><b style="font-size:11px">경기 2</b></div>
+    <div><span class="pick accent">패 1.89</span><span class="pick muted">오버 1.80</span></div>
+  </div>
+  <div class="add-card">
+    <div style="font-size:22px">+</div>
+    <div style="font-size:11px; margin-top:6px;">경기 추가</div>
+  </div>
+</div>
+
+<h2>2. 추천 버튼 클릭 → 최소 3초 로딩 (야구공 회전 애니메이션)</h2>
+<div class="loading">
+  <svg class="ball" width="52" height="52" viewBox="0 0 52 52">
+    <circle cx="26" cy="26" r="23" fill="#fff" stroke="#b9c0cd" stroke-width="1"/>
+    <path d="M 8 12 Q 26 26 8 40" fill="none" stroke="#D85A30" stroke-width="1.5"/>
+    <path d="M 44 12 Q 26 26 44 40" fill="none" stroke="#D85A30" stroke-width="1.5"/>
+  </svg>
+  <div style="font-size:13px; color:#5b6472;">최적의 픽을 찾는 중...</div>
+</div>
+
+<h2>3. 결과: 상위 5개 조합 (막대 차트)</h2>
+<div class="bar-row"><span class="bar-label">경기1 승 + 경기2 오버</span><div class="bar-track"><div class="bar-fill" style="width:78%"></div></div><span class="bar-value">27.5%</span></div>
+<div class="bar-row"><span class="bar-label">경기1 언더 + 경기2 패</span><div class="bar-track"><div class="bar-fill" style="width:65%"></div></div><span class="bar-value">23.0%</span></div>
+<div class="bar-row"><span class="bar-label">경기1 승 + 경기2 패</span><div class="bar-track"><div class="bar-fill" style="width:58%"></div></div><span class="bar-value">19.8%</span></div>
+
+<p style="font-size:11px; color:#999; margin-top:30px;">참고용 레이아웃 목업입니다. 정확한 색상·폰트는 기존 dashboard.html 스타일을 따르면 됩니다.</p>
+
+</body>
+</html>

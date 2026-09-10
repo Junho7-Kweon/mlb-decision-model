@@ -1,0 +1,19 @@
+{
+  "policy": "reviewed-open-and-licensed-data",
+  "default": "blocked",
+  "allowed": [
+    "retrosheet",
+    "chadwick_register",
+    "nws",
+    "data_go_kr_kspo_results",
+    "user_input",
+    "balldontlie",
+    "mlb_statsapi"
+  ],
+  "blocked": [
+    "baseball_savant",
+    "the_odds_api",
+    "sportsbook_scrape",
+    "unreviewed_third_party_dataset"
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "method": "chronological_80_20_holdout",
+  "train_games": 7914,
+  "test_games": 1979,
+  "test_start": "2025-05-04T13:07:00",
+  "baseline": {
+    "brier": 0.24898379844864585,
+    "log_loss": 0.6911134562002293,
+    "accuracy": 0.5320869125821122
+  },
+  "models": {
+    "updated_logistic": {
+      "brier": 0.24562729763177724,
+      "log_loss": 0.68429509884448,
+      "accuracy": 0.5548256695300657
+    },
+    "updated_poisson": {
+      "brier": 0.24694673355448216,
+      "log_loss": 0.6872791888893969,
+      "accuracy": 0.5553309752400202
+    },
+    "previous_logistic": {
+      "brier": 0.24522058930228952,
+      "log_loss": 0.6834813297675265,
+      "accuracy": 0.5613946437594745
+    },
+    "previous_poisson": {
+      "brier": 0.24597926714346427,
+      "log_loss": 0.6850421330134647,
+      "accuracy": 0.5447195553309753
+    }
+  }
+}
