@@ -5,6 +5,7 @@ import json
 import os
 import threading
 from dataclasses import asdict
+from datetime import date as Date, datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,8 +19,9 @@ from .model_probability import (
 )
 from .score_model import TeamScoreModel
 from .pregame import attach_pregame_probabilities, read_games
-from .mlb_daily_data import refresh
+from .mlb_daily_data import KST, refresh
 from .ocr_extract import OcrNotAvailableError, extract_odds
+from .postgame_review import PostgameReviewUnavailable, collect_date
 from .snapshot import decode_image, save_snapshot, validate_picks
 
 
@@ -31,10 +33,51 @@ MODEL_PROBABILITIES_PATH = PROJECT_ROOT / "data" / "private" / "model_probabilit
 SCORE_MODEL_PATH = PROJECT_ROOT / "models" / "score_model.json"
 F5_SCORE_MODEL_PATH = PROJECT_ROOT / "models" / "score_model_f5.json"
 PREGAME_PATH = PROJECT_ROOT / "data" / "private" / "pregame_observations.json"
+POSTGAME_REVIEW_ROOT = PROJECT_ROOT / "data" / "private" / "game_reviews"
 SYNC_LOCK = threading.Lock()
 SYNC_STATUS = {"state": "idle", "message": "당일 데이터 갱신 대기"}
 MAX_REQUEST_BYTES = 12 * 1024 * 1024
 DEFAULT_SIMULATIONS = 200_000
+
+
+def refresh_daily_bundle(date: str | None = None, progress=None) -> dict[str, Any]:
+    """Prepare pregame features and archive the previous completed KST slate.
+
+    Yesterday is collected rather than the selected day's partial results, so
+    future model research never learns from an unfinished slate.  Failure to
+    archive a review does not discard otherwise valid pregame observations.
+    """
+    result = refresh(PREGAME_PATH, date=date, progress=progress)
+    today = datetime.now(timezone.utc).astimezone(KST).date()
+    selected = Date.fromisoformat(date) if date else today
+    review_day = selected - timedelta(days=1)
+    if review_day > today:
+        result["postgame_review"] = {"status": "skipped", "reason": "future date"}
+        return result
+    if progress:
+        progress(f"{review_day.isoformat()} 전체 종료 경기와 승부처 정리 중")
+    try:
+        review = collect_date(POSTGAME_REVIEW_ROOT, review_day)
+    except PostgameReviewUnavailable as exc:
+        result["postgame_review"] = {
+            "status": "unavailable",
+            "date": review_day.isoformat(),
+            "reason": str(exc),
+        }
+    except Exception as exc:  # review is auxiliary; preserve valid pregame data
+        result["postgame_review"] = {
+            "status": "error",
+            "date": review_day.isoformat(),
+            "reason": str(exc),
+        }
+    else:
+        result["postgame_review"] = {
+            "status": "saved",
+            "date": review_day.isoformat(),
+            "path": review["path"],
+            "game_count": review["game_count"],
+        }
+    return result
 
 
 def resolve_model_picks(raw_picks: list[dict[str, Any]]):
@@ -60,15 +103,52 @@ def analyze_payload(
     top_n = payload.get("top_n")
     top_n = int(top_n) if top_n else None
     picks = [Pick(row.name, row.probability, row.odds, row.event_id) for row in validated]
-    survival = rank_combinations(
+    all_survival = rank_combinations(
         picks, legs=legs, simulations=simulations, sort_by="survival"
     )
-    expected_value = sorted(survival, key=lambda row: (row.expected_return, row.hit_probability), reverse=True)
-    combination_count = len(survival)
-    worst_survival = asdict(survival[-1]) if survival else None
+    all_expected_value = sorted(
+        all_survival,
+        key=lambda row: (row.expected_return, row.hit_probability),
+        reverse=True,
+    )
+    # A high hit probability alone does not make a bet recommendable.  The
+    # September 16 real ticket exposed this failure mode: a -46.6% EV combo
+    # was labelled DIAMOND merely because it had the highest survival rate.
+    # The September 17 tickets exposed a second failure mode: a positive combo
+    # could still contain an individually negative-EV leg.  This affected not
+    # only the -11.2% FADE under, but also the -1.1% PASS handicap shared by the
+    # top two cards.  Keep full rankings for analysis, but every recommended
+    # leg and the combined ticket must have non-negative EV.
+    non_negative_leg_names = {
+        row.name
+        for row in validated
+        if row.probability * row.odds - 1.0 >= 0.0
+    }
+    all_recommended = [
+        row
+        for row in all_survival
+        if row.expected_return >= 0.0
+        and all(name in non_negative_leg_names for name in row.picks)
+    ]
+    combination_count = len(all_survival)
+    worst_survival = asdict(all_survival[-1]) if all_survival else None
+    survival = all_survival
+    expected_value = all_expected_value
+    recommended = all_recommended
     if top_n:
         survival = survival[:top_n]
         expected_value = expected_value[:top_n]
+        recommended = recommended[:top_n]
+    exposure: dict[str, list[int]] = {}
+    for rank, combination in enumerate(recommended, start=1):
+        for pick_name in combination.picks:
+            exposure.setdefault(pick_name, []).append(rank)
+    shared_exposures = [
+        {"pick": pick_name, "card_count": len(ranks), "card_ranks": ranks}
+        for pick_name, ranks in exposure.items()
+        if len(ranks) > 1
+    ]
+    shared_exposures.sort(key=lambda row: (-row["card_count"], row["pick"]))
     diagnostics = []
     for row in validated:
         break_even = 1.0 / row.odds
@@ -91,7 +171,7 @@ def analyze_payload(
         )
     return {
         "assumption": "independent-picks",
-        "warning": f"{probability_status.message} 같은 경기의 복수 마켓은 자동으로 한 조합에서 제외합니다. 서로 다른 경기 사이의 상관관계는 아직 독립으로 가정합니다.",
+        "warning": f"{probability_status.message} 추천 카드는 조합과 모든 개별 다리의 EV가 0 이상일 때만 표시합니다. 같은 경기의 복수 마켓은 자동으로 한 조합에서 제외합니다. 서로 다른 경기 사이의 상관관계는 아직 독립으로 가정합니다.",
         "top_n": top_n,
         "simulations": simulations,
         "combination_count": combination_count,
@@ -100,6 +180,8 @@ def analyze_payload(
         "pick_diagnostics": diagnostics,
         "survival_rank": [asdict(row) for row in survival],
         "ev_rank": [asdict(row) for row in expected_value],
+        "recommended_rank": [asdict(row) for row in recommended],
+        "shared_exposures": shared_exposures,
     }
 
 
@@ -243,7 +325,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 SYNC_STATUS.update(state="running", message="당일 자료를 수집 중입니다. 최초 실행은 과거 기록 동기화도 필요합니다.")
                 def sync():
                     try:
-                        result = refresh(PREGAME_PATH, date=payload.get("date"), progress=lambda message: SYNC_STATUS.update(message=message))
+                        result = refresh_daily_bundle(
+                            date=payload.get("date"),
+                            progress=lambda message: SYNC_STATUS.update(message=message),
+                        )
                         SYNC_STATUS.update(state="done", message=f"{result['ready_games']}경기 준비", result=result)
                     except Exception as exc:
                         SYNC_STATUS.update(state="error", message=f"수집 실패: {exc}")

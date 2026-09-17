@@ -58,7 +58,7 @@ def validate_picks(
         if not 0.001 <= probability <= 0.999:
             raise ValueError(f"probability must be between 0.001 and 0.999: {name}")
         if not 1.01 <= odds <= 100.0:
-            raise ValueError(f"decimal odds must be between 1.01 and 100: {name}")
+            raise ValueError(f"배당은 1.01 이상 100 이하의 소수여야 합니다: {name} (입력값 {odds:g})")
         seen.add(name)
         picks.append(SnapshotPick(event_id, name, probability, odds, probability_source))
     return picks

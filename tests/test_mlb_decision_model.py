@@ -6,7 +6,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 from mlb_decision_model.decision import Pick, evaluate_market, rank_combinations
-from mlb_decision_model.dashboard import analyze_payload, ocr_extract_payload
+from mlb_decision_model.dashboard import analyze_payload, ocr_extract_payload, refresh_daily_bundle
 from mlb_decision_model.features import (
     DataQualityError,
     FEATURE_NAMES,
@@ -19,7 +19,7 @@ from mlb_decision_model.sources import SourcePolicyError, require_approved_sourc
 from mlb_decision_model.retrosheet import EXPECTED_CSVS, inspect_bundle
 from mlb_decision_model.kspo import parse_results
 from mlb_decision_model.snapshot import validate_picks
-from mlb_decision_model.ocr_extract import parse_draft_odds
+from mlb_decision_model.ocr_extract import parse_draft_odds, _scaled_row_bounds
 
 
 class FeatureTests(unittest.TestCase):
@@ -186,6 +186,64 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(set(result["survival_rank"][0]["picks"]), {"A", "B"})
         self.assertEqual(result["assumption"], "independent-picks")
 
+    def test_recommendations_exclude_negative_ev_survival_leader(self):
+        payload = {
+            "legs": 2,
+            "picks": [
+                {"event_id": "A", "name": "safe-expensive-1", "probability": 0.70, "odds": 1.20},
+                {"event_id": "B", "name": "safe-expensive-2", "probability": 0.68, "odds": 1.20},
+                {"event_id": "C", "name": "value-1", "probability": 0.58, "odds": 1.90},
+                {"event_id": "D", "name": "value-2", "probability": 0.56, "odds": 1.95},
+            ],
+        }
+        result = analyze_payload(payload)
+        self.assertLess(result["survival_rank"][0]["expected_return"], 0)
+        self.assertTrue(result["recommended_rank"])
+        self.assertTrue(all(row["expected_return"] >= 0 for row in result["recommended_rank"]))
+        self.assertEqual(set(result["recommended_rank"][0]["picks"]), {"value-1", "value-2"})
+
+    def test_recommendations_exclude_positive_combo_with_negative_ev_leg(self):
+        result = analyze_payload(
+            {
+                "legs": 2,
+                "picks": [
+                    {"event_id": "A", "name": "strong-value", "probability": 0.80, "odds": 2.00},
+                    {"event_id": "B", "name": "high-probability-negative-ev", "probability": 0.80, "odds": 1.24},
+                    {"event_id": "C", "name": "other-value", "probability": 0.55, "odds": 2.00},
+                ],
+            }
+        )
+        self.assertEqual(
+            set(result["survival_rank"][0]["picks"]),
+            {"strong-value", "high-probability-negative-ev"},
+        )
+        self.assertGreater(result["survival_rank"][0]["expected_return"], 0)
+        self.assertTrue(result["recommended_rank"])
+        self.assertTrue(
+            all(
+                "high-probability-negative-ev" not in row["picks"]
+                for row in result["recommended_rank"]
+            )
+        )
+
+    def test_recommendation_response_identifies_shared_card_exposure(self):
+        result = analyze_payload(
+            {
+                "legs": 2,
+                "top_n": 5,
+                "picks": [
+                    {"event_id": "A", "name": "A-value", "probability": 0.65, "odds": 1.80},
+                    {"event_id": "B", "name": "B-value", "probability": 0.62, "odds": 1.85},
+                    {"event_id": "C", "name": "C-value", "probability": 0.60, "odds": 1.90},
+                ],
+            }
+        )
+        self.assertEqual(len(result["recommended_rank"]), 3)
+        exposures = {row["pick"]: row for row in result["shared_exposures"]}
+        self.assertEqual(exposures["A-value"]["card_count"], 2)
+        self.assertEqual(exposures["B-value"]["card_count"], 2)
+        self.assertEqual(exposures["C-value"]["card_count"], 2)
+
     def test_ocr_extract_payload_requires_image(self):
         with self.assertRaises(ValueError):
             ocr_extract_payload({})
@@ -227,6 +285,19 @@ class DecisionTests(unittest.TestCase):
 
 
 class InputTests(unittest.TestCase):
+    @patch("mlb_decision_model.dashboard.collect_date")
+    @patch("mlb_decision_model.dashboard.refresh")
+    def test_daily_refresh_archives_previous_completed_kst_slate(self, daily_refresh, collect):
+        daily_refresh.return_value = {"ready_games": 12, "pending": []}
+        collect.return_value = {"path": "review.json", "game_count": 15}
+
+        result = refresh_daily_bundle("2026-09-18")
+
+        daily_refresh.assert_called_once()
+        self.assertEqual(collect.call_args.args[1].isoformat(), "2026-09-17")
+        self.assertEqual(result["postgame_review"]["status"], "saved")
+        self.assertEqual(result["postgame_review"]["game_count"], 15)
+
     def test_snapshot_pick_validation(self):
         picks = validate_picks(
             [
@@ -261,6 +332,12 @@ class InputTests(unittest.TestCase):
 
 
 class OcrExtractTests(unittest.TestCase):
+    def test_market_rows_scale_to_actual_screenshot_height(self):
+        # 1072x455 real capture: the total is the fourth of five ~79px rows.
+        # The former fixed 71px step ended that crop before the odds baseline.
+        self.assertEqual(_scaled_row_bounds(57, 455, 5, 3), (296, 375))
+        self.assertEqual(_scaled_row_bounds(57, 455, 5, 4), (375, 455))
+
     def test_sum_never_replaces_moneyline_after_lost_decimals(self):
         text = "필라델피아 필리스 vs 애틀랜타 브레이브스\n야구 승패\n승 패\n2374 141\n야구 SUM\n홀 짝\n1.58 2.09"
         self.assertNotIn("moneyline", [d.market for d in parse_draft_odds(text)])
@@ -319,6 +396,19 @@ class OcrExtractTests(unittest.TestCase):
         markets = {d.market for d in results}
         self.assertIn("moneyline", markets)
         self.assertNotIn("total", markets)
+
+    def test_impossible_ocr_odds_are_partial_not_active_values(self):
+        results = parse_draft_odds("야구 언더오버 U/O 7.5\n언더 오버\n0.78 1.92")
+        total = next(d for d in results if d.market == "total")
+        self.assertIsNone(total.odds_a)
+        self.assertEqual(total.odds_b, 1.92)
+        self.assertEqual(total.confidence, "partial")
+
+    def test_implausible_two_way_margin_requires_manual_confirmation(self):
+        results = parse_draft_odds("야구 언더오버 U/O 7.5\n언더 오버\n1.86 1.07")
+        total = next(d for d in results if d.market == "total")
+        self.assertEqual((total.odds_a, total.odds_b), (1.86, 1.07))
+        self.assertEqual(total.confidence, "partial")
 
 
 if __name__ == "__main__":

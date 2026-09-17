@@ -115,6 +115,26 @@ def _numbers_on_line(line: str) -> list[float]:
     return values
 
 
+def _valid_decimal_odds(value: float | None) -> bool:
+    return value is not None and 1.01 <= value <= 100.0
+
+
+def _plausible_market_odds(values: list[float | None]) -> bool:
+    """Reject a complete OCR row whose combined implied margin is implausible.
+
+    Individual values such as 1.07 are legal decimal odds, so a range check
+    cannot catch an OCR substitution like 1.67 -> 1.07.  A complete two- or
+    three-way market provides an additional invariant: the sum of implied
+    probabilities should remain near one, including the bookmaker margin.
+    Values are retained for manual correction, but the row is marked partial.
+    """
+    if len(values) not in {2, 3} or not all(_valid_decimal_odds(value) for value in values):
+        return False
+    implied_sum = sum(1.0 / float(value) for value in values if value is not None)
+    upper = 1.35 if len(values) == 2 else 1.50
+    return 0.85 <= implied_sum <= upper
+
+
 def _clean_event_name(value: str) -> str:
     cleaned = " ".join(value.split()).strip()
     # The tiny blue `vs` glyph is often read as `ys`, `v5`, or only its
@@ -147,10 +167,11 @@ def _make(
     nums: list[float],
     event_name: str | None = None,
 ) -> DraftOdds:
-    confidence = "ok" if len(nums) == 2 else "partial"
+    safe = [value if _valid_decimal_odds(value) else None for value in nums[:2]]
+    confidence = "ok" if _plausible_market_odds(safe) else "partial"
     return DraftOdds(
-        market, label_a, nums[0] if len(nums) > 0 else None,
-        label_b, nums[1] if len(nums) > 1 else None, confidence, event_name,
+        market, label_a, safe[0] if len(safe) > 0 else None,
+        label_b, safe[1] if len(safe) > 1 else None, confidence, event_name,
     )
 
 
@@ -284,7 +305,7 @@ def _odds_by_cell(
     """OCR each visual odds button separately so missing sides keep position."""
     def cell_value(text: str) -> float | None:
         decimals = _numbers_on_line(text)
-        if decimals:
+        if decimals and _valid_decimal_odds(decimals[0]):
             return decimals[0]
         return None  # Ambiguous decimal-less tokens must be manually verified.
 
@@ -319,7 +340,8 @@ def _odds_by_cell(
         row = image_ops.autocontrast(image_ops.grayscale(row).resize((row.width*3,row.height*3)))
         for variant in (row.point(lambda px:255 if px>190 else 0), row):
             numbers = _numbers_on_line(pytesseract.image_to_string(variant,lang="eng",config=config))
-            if len(numbers)==expected and all(v is None or v==numbers[i] for i,v in enumerate(values)):
+            if (len(numbers) == expected and all(_valid_decimal_odds(value) for value in numbers)
+                    and all(v is None or v == numbers[i] for i, v in enumerate(values))):
                 values = numbers
                 break
     return values
@@ -339,6 +361,19 @@ def _market_line(text: str, *, handicap: bool) -> float | None:
     if handicap and value > 20 and str(value).startswith("4"):
         return float(str(value)[1:])
     return value
+
+
+def _scaled_row_bounds(
+    header_bottom: int,
+    block_end: int,
+    row_count: int,
+    row_index: int,
+) -> tuple[int, int]:
+    """Return one market row using the block's actual rendered height."""
+    row_height = (block_end - header_bottom) / row_count
+    top = round(header_bottom + row_height * row_index)
+    bottom = round(header_bottom + row_height * (row_index + 1))
+    return top, min(block_end, bottom)
 
 
 def _layout_market_drafts(image_bytes: bytes, raw_text: str) -> list[DraftOdds]:
@@ -388,6 +423,13 @@ def _layout_market_drafts(image_bytes: bytes, raw_text: str) -> list[DraftOdds]:
         row_count = min(8, max(0, int((available + 10) // 71)))
         if row_count < 1:
             continue
+        # Proto screenshots are rendered at different browser zoom/scaling
+        # levels.  Recent 1072x455 captures have ~79 px market rows, while the
+        # older fixtures use ~71 px.  Advancing by a hard-coded 71 px made the
+        # fourth-row total crop drift upward until it missed the odds digits;
+        # Tesseract then hallucinated the same 1.07 value for 1.89 and 1.87.
+        # Once the number of rows is known, distribute the actual block height
+        # across them so every row stays aligned with its visible cell.
 
         header_crop = image.crop(
             (int(width * 0.28), header_start, int(width * 0.82), min(block_end, header_start + 66))
@@ -410,8 +452,9 @@ def _layout_market_drafts(image_bytes: bytes, raw_text: str) -> list[DraftOdds]:
 
         label_texts: list[str] = []
         for row_index in range(row_count):
-            top = header_bottom + 71 * row_index
-            bottom = min(block_end, top + 71)
+            top, bottom = _scaled_row_bounds(
+                header_bottom, block_end, row_count, row_index
+            )
             label_crop = image.crop((int(width * 0.10), top, int(width * 0.47), bottom))
             label_gray = ImageOps.autocontrast(
                 ImageOps.grayscale(label_crop).resize((label_crop.width * 2, label_crop.height * 2))
@@ -434,8 +477,9 @@ def _layout_market_drafts(image_bytes: bytes, raw_text: str) -> list[DraftOdds]:
             if spec is None:
                 continue
             market, period, labels, expected, needs_line = spec
-            top = header_bottom + 71 * row_index
-            bottom = min(block_end, top + 71)
+            top, bottom = _scaled_row_bounds(
+                header_bottom, block_end, row_count, row_index
+            )
             odds = _odds_by_cell(
                 image, top, bottom, expected, pytesseract, ImageOps
             )
@@ -456,7 +500,11 @@ def _layout_market_drafts(image_bytes: bytes, raw_text: str) -> list[DraftOdds]:
                     odds_b=padded[1],
                     confidence=(
                         "ok"
-                        if recognized == expected and (not needs_line or line_value is not None)
+                        if (
+                            recognized == expected
+                            and _plausible_market_odds(odds)
+                            and (not needs_line or line_value is not None)
+                        )
                         else "partial"
                     ),
                     event_name=event_name,

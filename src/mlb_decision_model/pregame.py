@@ -14,6 +14,8 @@ from .sources import require_approved_source
 
 
 CONTRACT = "retrosheet_decay_v2"
+PREGAME_DETAILED_STATES = {"Scheduled", "Pre-Game", "Warmup"}
+POST_SCHEDULED_START_PREVIEW_TTL = timedelta(minutes=10)
 
 
 def timestamp(value):
@@ -69,10 +71,19 @@ def read_games(path: Path, now=None):
                 raise ValueError("경기 ID가 없거나 중복됐습니다")
             seen.add(game["event_id"])
             start, as_of, retrieved = map(timestamp, (game["starts_at"], game["as_of"], game["retrieved_at"]))
-            if not as_of <= retrieved <= now or as_of >= start:
+            source_abstract = game.get("source_abstract_game_state")
+            source_detailed = game.get("source_detailed_state")
+            source_preview = ((source_abstract == "Preview" and source_detailed in PREGAME_DETAILED_STATES)
+                              or (source_abstract == "Live" and source_detailed == "Warmup"))
+            if not as_of <= retrieved <= now or (as_of >= start and not source_preview):
                 raise ValueError("경기 전 자료 시각이 올바르지 않습니다")
             # Old games must not make unrelated upcoming games unusable.
-            if start <= now or now - retrieved > timedelta(hours=6):
+            if now - retrieved > timedelta(hours=6):
+                continue
+            # Warmup can legitimately continue beyond the nominal first-pitch
+            # time.  Such snapshots are intentionally short-lived so a stale
+            # pregame response cannot be reused after live play begins.
+            if start <= now and (not source_preview or now - retrieved > POST_SCHEDULED_START_PREVIEW_TTL):
                 continue
             if game.get("status") != "scheduled":
                 continue
@@ -98,7 +109,7 @@ def attach_pregame_probabilities(picks, path, full_model_path, f5_model_path, no
         if raw.get("game_date"):
             matches = [g for g in matches if timestamp(g["starts_at"]).astimezone(timezone(timedelta(hours=9))).date().isoformat() == raw["game_date"]]
         if len(matches) != 1:
-            missing.append(str(raw.get("event_id")) + (" (경기 ID로 더블헤더 구분 필요)" if matches else " (당일 자료·시작 시각·팀명 확인 필요)"))
+            missing.append(str(raw.get("event_id")) + (" (경기 ID로 더블헤더 구분 필요)" if matches else " (경기 전 자료 없음·이미 시작·시작 시각·팀명 확인 필요)"))
             continue
         game = matches[0]
         period = raw.get("period") or "full"

@@ -22,6 +22,13 @@ from .sources import require_approved_source
 
 BASE = "https://statsapi.mlb.com/api/v1/"
 KST = timezone(timedelta(hours=9))
+PREGAME_DETAILED_STATES = {"Scheduled", "Pre-Game", "Warmup"}
+KOREAN_TEAM_ALIASES = {
+    "LAA": {"에인절스"},
+    "LAD": {"다저스"},
+    "KC": {"캔자스시티 로얄스"},
+    "PIT": {"피츠버그 파이어리츠"},
+}
 
 
 def save(path, value):
@@ -39,7 +46,7 @@ class Client:
     def get(self, endpoint, params=None, ttl=21600):
         if not (endpoint == "schedule" or endpoint == "teams" or endpoint == "people" or
                 endpoint.startswith("teams/") and endpoint.endswith(("/stats", "/roster")) or
-                endpoint.startswith("game/") and endpoint.endswith("/boxscore")):
+                endpoint.startswith("game/") and endpoint.endswith(("/boxscore", "/playByPlay"))):
             raise ValueError("Unsupported MLB endpoint")
         url = BASE + endpoint + "?" + urlencode(params or {})
         path = self.cache / (hashlib.sha256(url.encode()).hexdigest() + ".json")
@@ -75,6 +82,32 @@ def completed_game(game, now):
             and game["status"].get("abstractGameState") == "Final"
             and timestamp(game["gameDate"]).date() < now.date()
             and all("score" in game["teams"][s] for s in ("home", "away")))
+
+
+def pregame_game(game):
+    """Return true only while MLB still classifies the game as pregame.
+
+    MLB changes ``detailedState`` from Scheduled to Pre-Game and Warmup before
+    first pitch.  Requiring the literal Scheduled value made valid captures
+    disappear just before the game, even though ``abstractGameState`` was still
+    Preview.  The explicit detail whitelist keeps delayed/postponed/live states
+    from slipping through on the broad abstract state alone.
+    """
+    status = game.get("status", {})
+    detailed = status.get("detailedState")
+    abstract = status.get("abstractGameState")
+    # MLB reports Warmup inconsistently: some games are Preview/Warmup while
+    # others become Live/Warmup before first pitch.  Warmup itself is the
+    # authoritative pre-first-pitch detail; In Progress remains blocked.
+    return ((abstract == "Preview" and detailed in PREGAME_DETAILED_STATES)
+            or (abstract == "Live" and detailed == "Warmup"))
+
+
+def team_aliases(team):
+    """Reviewed display aliases used by OCR/API joining; team id stays canonical."""
+    code = {"AZ": "ARI", "OAK": "ATH"}.get(team["abbreviation"], team["abbreviation"])
+    return {team["name"], team["abbreviation"], KOREAN.get(code, team["name"]),
+            *KOREAN_TEAM_ALIASES.get(code, set())}
 
 
 def team_form(team, logs, arms, final_ids, repair=None):
@@ -165,10 +198,17 @@ def refresh(output, date=None, client=None, game_id=None, progress=None):
         raise DailyDataUnavailable("현재 API 자료를 과거 시점 예측에 사용할 수 없습니다")
     if day > now.astimezone(KST).date() + timedelta(days=7):
         raise DailyDataUnavailable("당일 연결은 향후 7일 이내 경기만 지원합니다")
-    schedule = client.get("schedule", {"sportId": 1, "startDate": (day - timedelta(days=1)).isoformat(), "endDate": day.isoformat(), "hydrate": "probablePitcher"}, ttl=0)
-    targets = [g for d in schedule.get("dates", []) for g in d["games"] if g.get("gameType") == "R" and g["status"]["detailedState"] == "Scheduled" and timestamp(g["gameDate"]) > now and timestamp(g["gameDate"]).astimezone(KST).date() == day and (game_id is None or g["gamePk"] == game_id)]
+    schedule_params = {"sportId": 1, "startDate": (day - timedelta(days=1)).isoformat(),
+                       "endDate": day.isoformat(), "hydrate": "probablePitcher"}
+    schedule = client.get("schedule", schedule_params, ttl=0)
+    # Scheduled, Pre-Game and Warmup are all MLB Preview states.  Do not use the
+    # nominal start time as the source of truth because warmups can run late.
+    targets = [g for d in schedule.get("dates", []) for g in d["games"]
+               if g.get("gameType") == "R" and pregame_game(g)
+               and timestamp(g["gameDate"]).astimezone(KST).date() == day
+               and (game_id is None or g["gamePk"] == game_id)]
     if not targets:
-        raise DailyDataUnavailable("선택한 한국 날짜에 시작 전 정규시즌 경기가 없습니다")
+        raise DailyDataUnavailable("선택한 한국 날짜에 경기 전(예정·프리게임·워밍업) 정규시즌 경기가 없습니다")
     teams = {t["id"]: t for t in client.get("teams", {"sportId": 1})["teams"]}
     final_ids = {}
     seasons = range(2021, now.year + 1)
@@ -191,14 +231,32 @@ def refresh(output, date=None, client=None, game_id=None, progress=None):
             forms[team] = team_form(team, logs, arms, final_ids, repair=lambda gid: client.get(f"game/{gid}/boxscore"))
         except DailyDataUnavailable as exc:
             failures[team] = str(exc)
+    # Collection can take several minutes on a cold cache.  Re-check the live
+    # schedule so a game that started during collection is never emitted.
+    latest_schedule = client.get("schedule", schedule_params, ttl=0)
+    latest_by_id = {g["gamePk"]: g for d in latest_schedule.get("dates", []) for g in d["games"]}
+    latest_pitchers = {s["probablePitcher"]["id"]
+                       for g in latest_by_id.values() if g.get("gamePk") in {t["gamePk"] for t in targets}
+                       for s in g.get("teams", {}).values() if s.get("probablePitcher")}
+    extra_pitchers = sorted(latest_pitchers - set(pitchers))
+    if extra_pitchers:
+        pitcher_data.extend(
+            client.get("people", {"personIds": ",".join(map(str, extra_pitchers)),
+                                   "hydrate": f"stats(type=gameLog,group=pitching,season={year})"})
+            for year in seasons
+        )
     games, pending = [], []
     completed_at = datetime.now(timezone.utc)
     for target in targets:
         gid = f"mlb:{target['gamePk']}"
         try:
-            if timestamp(target["gameDate"]) <= completed_at or completed_at - now > timedelta(hours=6):
-                raise DailyDataUnavailable("수집 중 경기 시작 또는 선발 자료 유효시간 초과")
-            result = dict(event_id=gid, starts_at=target["gameDate"], status="scheduled", feature_contract=CONTRACT,
+            target = latest_by_id.get(target["gamePk"])
+            if not target or not pregame_game(target) or completed_at - now > timedelta(hours=6):
+                raise DailyDataUnavailable("수집 중 경기 시작·상태 변경 또는 선발 자료 유효시간 초과")
+            result = dict(event_id=gid, starts_at=target["gameDate"], status="scheduled",
+                          source_abstract_game_state=target["status"].get("abstractGameState"),
+                          source_detailed_state=target["status"].get("detailedState"),
+                          feature_contract=CONTRACT,
                           source_id="mlb_statsapi", source_url=BASE, source_version="v1-gameLog-decay-2021",
                           as_of=completed_at.isoformat(), retrieved_at=completed_at.isoformat(), schedule_retrieved_at=now.isoformat())
             aliases = {}
@@ -211,11 +269,7 @@ def refresh(output, date=None, client=None, game_id=None, progress=None):
                     raise DailyDataUnavailable("예정 선발 발표 대기")
                 form, _, last = forms[team]
                 result[side] = {**form, "starter_id": starter, "starter_era": pitcher_form(starter, pitcher_data, final_ids), "days_since_last_game": (timestamp(target["gameDate"]).date() - last).days}
-                t = teams[team]
-                code = {"AZ": "ARI", "OAK": "ATH"}.get(t["abbreviation"], t["abbreviation"])
-                aliases[side] = {t["name"], t["abbreviation"], KOREAN.get(code, t["name"])}
-                if code == "LAD":
-                    aliases[side].add("다저스")
+                aliases[side] = team_aliases(teams[team])
             h, a = result["home"]["team_id"], result["away"]["team_id"]
             result.update(h2h_home_wins=forms[h][1][a], h2h_away_wins=forms[a][1][h],
                           event_aliases=[f"{hn}{sep}{an}" for hn in aliases["home"] for an in aliases["away"] for sep in (" vs ", " ")],

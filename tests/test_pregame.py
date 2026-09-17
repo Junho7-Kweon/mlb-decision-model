@@ -52,6 +52,22 @@ class PregameTests(unittest.TestCase):
                 else:
                     self.assertEqual(read_games(path, NOW), [])
 
+    def test_recent_mlb_warmup_snapshot_survives_nominal_start_only_briefly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "daily.json"
+            warmup = {**game(), "starts_at": "2026-09-09T07:55:00+00:00",
+                      "as_of": "2026-09-09T08:00:00+00:00",
+                      "retrieved_at": "2026-09-09T08:00:00+00:00",
+                      "source_abstract_game_state": "Preview",
+                      "source_detailed_state": "Warmup"}
+            path.write_text(json.dumps({"games": [warmup]}), encoding="utf-8")
+            self.assertEqual(len(read_games(path, NOW)), 1)
+            self.assertEqual(read_games(path, datetime(2026, 9, 9, 8, 11, tzinfo=timezone.utc)), [])
+
+            warmup["source_abstract_game_state"] = "Live"
+            path.write_text(json.dumps({"games": [warmup]}), encoding="utf-8")
+            self.assertEqual(len(read_games(path, NOW)), 1)
+
     def test_team_features_change_probabilities_not_odds(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
